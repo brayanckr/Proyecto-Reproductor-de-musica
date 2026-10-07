@@ -1,0 +1,21 @@
+# Netlify configuration for UCCplay (single-page application).
+# Docs: https://docs.netlify.com/configure-builds/file-based-configuration/
+
+[build]
+  command = "npm run build"
+  publish = "dist-web"
+
+[build.environment]
+  NODE_VERSION = "20"
+
+# SPA fallback: let the client handle all routes and always serve index.html.
+[[redirects]]
+  from = "/*"
+  to = "/index.html"
+  status = 200
+
+# Long-lived caching for hashed assets produced by Vite.
+[[headers]]
+  for = "/assets/*"
+  [headers.values]
+    Cache-Control = "public, max-age=31536000, immutable"

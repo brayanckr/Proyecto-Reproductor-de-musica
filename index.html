@@ -1,0 +1,445 @@
+<!DOCTYPE html>
+<html lang="es">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <meta name="description" content="UCCplay: reproductor de música institucional con lista doblemente enlazada." />
+        <title>UCCplay — Reproductor de Música Institucional</title>
+        <link rel="preconnect" href="https://fonts.googleapis.com" />
+        <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+        <link
+            href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&display=swap"
+            rel="stylesheet"
+        />
+        <script>
+            // Apply the saved color theme before paint to avoid a flash.
+            (function () {
+                try {
+                    var theme = localStorage.getItem('uccplay-theme');
+                    if (theme === 'dark' || theme === 'light') {
+                        document.documentElement.setAttribute('data-theme', theme);
+                    }
+                } catch (error) {
+                    /* localStorage unavailable: fall back to the light theme. */
+                }
+            })();
+        </script>
+    </head>
+    <body>
+        <!-- ===================== Zona 1: Encabezado fijo ===================== -->
+        <header class="app-header">
+            <div class="app-header__inner">
+                <button id="btn-sidebar-toggle" class="icon-btn header-menu" type="button"
+                    title="Mostrar u ocultar la navegación" aria-label="Mostrar navegación">
+                    <span data-icon="menu" aria-hidden="true"></span>
+                </button>
+
+                <a class="brand" href="#" aria-label="UCCplay, inicio">
+                    <span class="brand-badge" aria-hidden="true">
+                        <span class="brand-badge__note" data-icon="music"></span>
+                    </span>
+                    <span class="brand-title">UCCplay</span>
+                </a>
+
+                <div class="top-search" id="top-search">
+                    <form id="form-search" class="top-search__form" role="search" novalidate>
+                        <span class="top-search__icon" data-icon="search" aria-hidden="true"></span>
+                        <input
+                            id="top-search-input"
+                            type="search"
+                            placeholder="Buscar canciones, álbumes o artistas en YouTube Music..."
+                            autocomplete="off"
+                            aria-label="Buscar en YouTube Music"
+                        />
+                        <button id="btn-search" class="top-search__button" type="submit">Buscar</button>
+                    </form>
+
+                    <div class="search-dropdown" id="search-dropdown">
+                        <p id="search-status" class="form-status" role="status"></p>
+                        <div id="search-results" class="search-results" aria-live="polite"></div>
+
+                        <details class="api-key" id="youtube-key-config">
+                            <summary>Opciones avanzadas de búsqueda</summary>
+                            <div class="field">
+                                <label for="input-youtube-key">Clave API de YouTube (opcional)</label>
+                                <input
+                                    id="input-youtube-key"
+                                    type="password"
+                                    placeholder="AIza..."
+                                    autocomplete="off"
+                                />
+                                <p class="hint">Sin clave se usa el catálogo local de demostración. También puedes definirla en el archivo .env (VITE_YOUTUBE_API_KEY).</p>
+                            </div>
+                        </details>
+                        <p id="youtube-key-auto" class="hint is-auto" hidden>Clave de YouTube configurada automáticamente desde .env.</p>
+                    </div>
+                </div>
+
+                <span class="brand-chip">
+                    <span class="brand-chip__dot"></span> Lista Doblemente Enlazada
+                </span>
+
+                <div class="header-actions">
+                    <button id="btn-shortcuts" class="icon-btn" type="button"
+                        title="Atajos de teclado" aria-label="Mostrar atajos de teclado" aria-expanded="false">
+                        <span data-icon="keyboard" aria-hidden="true"></span>
+                    </button>
+                    <button id="btn-theme" class="icon-btn" type="button"
+                        title="Cambiar tema claro / oscuro" aria-label="Cambiar tema" aria-pressed="false">
+                        <span id="theme-icon" data-icon="moon" aria-hidden="true"></span>
+                    </button>
+                </div>
+            </div>
+        </header>
+
+        <!-- Ayuda flotante de atajos de teclado -->
+        <div class="shortcuts-help" id="shortcuts-help" hidden role="dialog"
+            aria-label="Atajos de teclado">
+            <p class="shortcuts-help__title">Atajos de teclado</p>
+            <ul class="shortcuts-help__list">
+                <li><kbd>Espacio</kbd><span>Reproducir / Pausar</span></li>
+                <li><kbd>→</kbd><span>Siguiente canción</span></li>
+                <li><kbd>←</kbd><span>Canción anterior</span></li>
+                <li><kbd>Esc</kbd><span>Cerrar paneles</span></li>
+            </ul>
+        </div>
+
+        <div class="app-shell">
+            <!-- ================= Zona 2a: Navegación lateral ================ -->
+            <aside class="sidebar" id="sidebar" aria-label="Navegación lateral">
+                <nav class="sidebar__nav">
+                    <button class="nav-item is-active" id="nav-home" type="button">
+                        <span class="nav-item__icon" data-icon="home" aria-hidden="true"></span>
+                        <span class="nav-item__label">Inicio</span>
+                    </button>
+
+                    <button class="nav-item nav-item--accent" id="btn-new-playlist" type="button">
+                        <span class="nav-item__icon" data-icon="plus" aria-hidden="true"></span>
+                        <span class="nav-item__label">Nueva Lista</span>
+                    </button>
+                </nav>
+
+                <div class="sidebar__section">
+                    <button class="sidebar__toggle" id="btn-toggle-playlists" type="button"
+                        aria-expanded="true" aria-controls="playlists-panel">
+                        <span>Mis Playlists</span>
+                        <span class="sidebar__caret" id="playlists-caret" aria-hidden="true">▾</span>
+                    </button>
+
+                    <div class="sidebar__panel" id="playlists-panel">
+                        <ul class="playlist-tree" id="playlist-tree"></ul>
+                    </div>
+                </div>
+            </aside>
+
+            <div class="sidebar-overlay" id="sidebar-overlay" hidden></div>
+
+            <!-- ================= Zona 2b: Contenido principal ============== -->
+            <main class="main-content">
+                <!-- Vista de Inicio: Reproduciendo Ahora + Asistente de IA -->
+                <div class="home-sections" id="home-sections">
+                    <section class="panel now-playing-card" aria-labelledby="now-heading">
+                        <h2 class="panel-title" id="now-heading">
+                            <span class="panel-icon" data-icon="play" aria-hidden="true"></span> Reproduciendo Ahora
+                        </h2>
+
+                        <div class="now-playing-card__body">
+                            <div class="cover-wrap">
+                                <img
+                                    id="hero-cover"
+                                    class="hero-cover"
+                                    alt="Portada del álbum"
+                                    src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><rect width='100%' height='100%' fill='%23e2e8f0'/><text x='50%' y='58%' font-size='120' text-anchor='middle' fill='%2300a8cc'>♪</text></svg>"
+                                />
+                                <span id="hero-equalizer" class="equalizer" aria-hidden="true">
+                                    <span></span><span></span><span></span>
+                                </span>
+                            </div>
+
+                            <div class="now-info">
+                                <p class="now-label">Canción actual</p>
+                                <h3 id="hero-title" class="now-title">Sin canción</h3>
+                                <p id="hero-artist" class="now-artist">—</p>
+                                <div id="hero-tags" class="tag-list"></div>
+                                <p id="hero-position" class="now-position">Canción 0 de 0</p>
+                            </div>
+                        </div>
+                    </section>
+
+                    <section class="panel mood-panel" aria-labelledby="mood-heading">
+                        <h2 class="panel-title" id="mood-heading">
+                            <span class="panel-icon" data-icon="sparkle" aria-hidden="true"></span> Asistente de IA por Estado de Ánimo
+                        </h2>
+
+                        <form id="form-mood" class="mood-form" novalidate>
+                            <div class="mood-form__row">
+                                <span class="mood-form__icon" data-icon="sparkle" aria-hidden="true"></span>
+                                <input
+                                    id="input-mood"
+                                    type="text"
+                                    placeholder="¿Cómo te sientes hoy? Ej. Estoy concentrado estudiando para mi examen"
+                                    autocomplete="off"
+                                    aria-label="¿Cómo te sientes hoy?"
+                                />
+                                <button class="btn btn-secondary mood-form__button" type="submit">
+                                    Obtener recomendación
+                                </button>
+                            </div>
+
+                            <details class="api-key" id="groq-key-config">
+                                <summary>Opciones avanzadas de IA</summary>
+                                <div class="field">
+                                    <label for="input-groq-key">Clave API de Groq (opcional)</label>
+                                    <input id="input-groq-key" type="password" placeholder="gsk_..." autocomplete="off" />
+                                    <p class="hint">Se toma automáticamente de VITE_GROQ_API_KEY si está configurada en el archivo .env.</p>
+                                </div>
+                            </details>
+                            <p id="groq-key-auto" class="hint is-auto" hidden>Clave de Groq configurada automáticamente desde .env.</p>
+
+                            <p id="mood-status" class="form-status" role="status"></p>
+                        </form>
+
+                        <!-- Tarjeta de vista previa con el resultado de la IA. -->
+                        <div id="mood-preview" class="mood-preview" aria-live="polite" hidden></div>
+                    </section>
+                </div>
+
+                <!-- Vista de lista: tabla de la lista activa -->
+                <section class="panel playlist-panel" id="playlist-panel" aria-labelledby="playlist-heading" hidden>
+                    <div class="panel-head">
+                        <h2 class="panel-title" id="playlist-heading">
+                            <span class="panel-icon" aria-hidden="true">≡</span>
+                            <span id="playlist-active-name">Lista de Reproducción</span>
+                        </h2>
+                        <div class="panel-head__actions">
+                            <button id="btn-add-song" class="btn btn-secondary" type="button"
+                                title="Buscar una canción y elegir dónde agregarla">
+                                <span class="btn-glyph" data-icon="plus" aria-hidden="true"></span>
+                                <span class="btn-text">Agregar canción</span>
+                            </button>
+                            <button id="btn-reverse" class="btn btn-ghost" type="button"
+                                title="Invertir el orden de la lista (intercambia punteros next/prev)">
+                                <span class="btn-glyph" data-icon="swap" aria-hidden="true"></span>
+                                <span class="btn-text">Invertir Lista</span>
+                            </button>
+                            <button id="btn-clear" class="btn btn-ghost btn-clear" type="button"
+                                title="Vaciar toda la lista de reproducción">
+                                <span class="btn-glyph" data-icon="trash" aria-hidden="true"></span>
+                                <span class="btn-text">Limpiar Lista</span>
+                            </button>
+                            <span id="playlist-count" class="pill">0 canciones</span>
+                        </div>
+                    </div>
+
+                    <div class="playlist-toolbar">
+                        <div class="playlist-toolbar__group">
+                            <label class="playlist-toolbar__label" for="sort-criteria">Ordenar por</label>
+                            <select id="sort-criteria" class="toolbar-select" aria-label="Criterio de orden">
+                                <option value="title">Título</option>
+                                <option value="artist">Artista</option>
+                                <option value="duration">Duración</option>
+                            </select>
+                            <button id="btn-sort-direction" class="btn btn-ghost toolbar-btn" type="button"
+                                title="Ordenar ascendente (clic para descendente)">
+                                <span id="sort-direction-icon" data-icon="arrowUp" aria-hidden="true"></span>
+                                <span id="sort-direction-label" class="btn-text">Ascendente</span>
+                            </button>
+                            <button id="btn-shuffle" class="btn btn-ghost toolbar-btn" type="button"
+                                title="Mezclar aleatoriamente la lista reenlazando nodos">
+                                <span data-icon="shuffle" aria-hidden="true"></span>
+                                <span class="btn-text">Mezclar</span>
+                            </button>
+                            <button id="btn-dedupe" class="btn btn-ghost toolbar-btn" type="button"
+                                title="Quitar canciones repetidas (mismo título y artista)">
+                                <span data-icon="layers" aria-hidden="true"></span>
+                                <span class="btn-text">Quitar repetidas</span>
+                            </button>
+                        </div>
+                        <div class="playlist-toolbar__group">
+                            <span id="playlist-duration" class="pill" title="Total de canciones y duración"></span>
+                        </div>
+                    </div>
+
+                    <div class="playlist-search">
+                        <span class="playlist-search__icon" data-icon="search" aria-hidden="true"></span>
+                        <input id="input-playlist-search" class="playlist-search__input" type="search"
+                            placeholder="Buscar en la lista (título o artista)..."
+                            autocomplete="off" aria-label="Buscar en la lista" />
+                        <span id="playlist-search-count" class="playlist-search__count" role="status"></span>
+                    </div>
+
+                    <p id="playlist-empty" class="empty-state">
+                        La lista está vacía. Busca canciones arriba o usa el asistente de IA.
+                    </p>
+
+                    <div class="table-wrap">
+                        <table class="playlist-table">
+                            <thead>
+                                <tr>
+                                    <th scope="col" class="col-index">Índice</th>
+                                    <th scope="col">Título</th>
+                                    <th scope="col" class="col-artist">Artista</th>
+                                    <th scope="col" class="col-duration">Duración</th>
+                                    <th scope="col" class="col-actions">Acciones</th>
+                                </tr>
+                            </thead>
+                            <tbody id="playlist-body"></tbody>
+                        </table>
+                    </div>
+                </section>
+
+                <p class="app-note">
+                    UCCplay · Proyecto de Estructuras de Datos · Lista Doblemente Enlazada en TypeScript
+                </p>
+            </main>
+
+            <!-- ================= Panel de letra sincronizada ============= -->
+            <aside class="lyrics-panel" id="lyrics-panel" aria-labelledby="lyrics-heading" hidden>
+                <div class="lyrics-panel__head">
+                    <div class="lyrics-panel__meta">
+                        <p class="lyrics-panel__eyebrow">Letra sincronizada</p>
+                        <h3 class="lyrics-panel__title" id="lyrics-heading">Sin canción</h3>
+                        <p class="lyrics-panel__artist" id="lyrics-artist">—</p>
+                    </div>
+                    <button id="btn-close-lyrics" class="icon-btn" type="button"
+                        title="Cerrar la letra" aria-label="Cerrar la letra">
+                        <span data-icon="close" aria-hidden="true"></span>
+                    </button>
+                </div>
+
+                <div class="lyrics-container" id="lyrics-container" aria-live="polite"></div>
+
+                <div class="lyrics-empty" id="lyrics-empty" hidden>
+                    <div class="lyrics-empty__icon" data-icon="music" aria-hidden="true"></div>
+                    <p class="lyrics-empty__title">Letra no disponible para esta canción</p>
+                    <p class="lyrics-empty__subtext">No se encontraron letras sincronizadas para este tema.</p>
+                    <a id="link-search-lyrics" class="btn btn-secondary lyrics-empty__action"
+                        href="#" target="_blank" rel="noopener noreferrer">Buscar letra en Google</a>
+                </div>
+            </aside>
+        </div>
+
+        <!-- ===================== Zona 3: Reproductor fijo inferior ========== -->
+        <footer class="player-bar" id="player-bar" aria-label="Reproductor">
+            <div class="player-bar__left">
+                <div class="player-cover-wrap">
+                    <img
+                        id="now-cover"
+                        class="player-cover"
+                        alt="Portada del álbum"
+                        src="data:image/svg+xml;utf8,<svg xmlns='http://www.w3.org/2000/svg' width='300' height='300'><rect width='100%' height='100%' fill='%23e2e8f0'/><text x='50%' y='58%' font-size='120' text-anchor='middle' fill='%2300a8cc'>♪</text></svg>"
+                    />
+                    <span id="now-equalizer" class="equalizer" aria-hidden="true">
+                        <span></span><span></span><span></span>
+                    </span>
+                </div>
+                <div class="player-meta">
+                    <p id="now-title" class="player-title">Sin canción</p>
+                    <p id="now-artist" class="player-artist">—</p>
+                    <p id="now-position" class="player-position">Canción 0 de 0</p>
+                </div>
+                <div id="now-tags" class="tag-list"></div>
+            </div>
+
+            <div class="player-bar__center">
+                <div class="controls">
+                    <button id="btn-previous" class="control-btn" type="button"
+                        title="Anterior" aria-label="Anterior">
+                        <span class="btn-glyph" data-icon="prev" aria-hidden="true"></span>
+                    </button>
+
+                    <button id="btn-play" class="control-btn control-btn--play" type="button"
+                        title="Reproducir" aria-label="Reproducir">
+                        <span id="play-icon" class="btn-glyph" aria-hidden="true"></span>
+                    </button>
+
+                    <button id="btn-next" class="control-btn" type="button"
+                        title="Siguiente" aria-label="Siguiente">
+                        <span class="btn-glyph" data-icon="next" aria-hidden="true"></span>
+                    </button>
+
+                    <button id="btn-loop" class="control-btn control-btn--loop" type="button"
+                        title="Repetición desactivada" aria-label="Repetición desactivada"
+                        aria-pressed="false">
+                        <span id="loop-icon" class="btn-glyph" aria-hidden="true"></span>
+                    </button>
+                </div>
+                <p id="player-status" class="player-status">Listo para reproducir</p>
+            </div>
+
+            <div class="player-bar__right">
+                <div class="progress">
+                    <span id="time-current" class="time">0:00</span>
+                    <input
+                        id="progress-bar"
+                        class="progress-bar"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="0.1"
+                        value="0"
+                        aria-label="Barra de progreso"
+                    />
+                    <span id="time-total" class="time">0:00</span>
+                </div>
+
+                <div class="volume">
+                    <button id="btn-mute" class="icon-btn" type="button" title="Silenciar" aria-pressed="false">
+                        <span id="volume-icon" aria-hidden="true"></span>
+                    </button>
+                    <input
+                        id="volume-bar"
+                        class="volume-bar"
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        value="100"
+                        aria-label="Volumen"
+                    />
+                    <button id="btn-lyrics" class="lyrics-toggle" type="button"
+                        title="Mostrar la letra sincronizada" aria-pressed="false">
+                        <span data-icon="mic" aria-hidden="true"></span>
+                        <span class="lyrics-toggle__label">Letra</span>
+                    </button>
+                </div>
+
+                <div class="player-shell" aria-hidden="true">
+                    <div id="yt-player"></div>
+                </div>
+            </div>
+        </footer>
+
+        <!-- ===================== Modal: nueva lista ========================= -->
+        <div class="modal-overlay" id="playlist-modal" hidden>
+            <div class="modal" role="dialog" aria-modal="true" aria-labelledby="playlist-modal-title">
+                <h3 class="modal__title" id="playlist-modal-title">Nueva Lista de Reproducción</h3>
+
+                <form id="form-new-playlist" class="modal__form" novalidate>
+                    <div class="field">
+                        <label for="input-playlist-name">Nombre de la lista</label>
+                        <input
+                            id="input-playlist-name"
+                            type="text"
+                            placeholder="Ej. Favoritas, Estudiar, Para entrenar..."
+                            maxlength="60"
+                            autocomplete="off"
+                        />
+                    </div>
+
+                    <p id="playlist-modal-error" class="form-status is-error" role="alert"></p>
+
+                    <div class="modal__actions">
+                        <button type="button" class="btn btn-ghost" id="btn-cancel-playlist">Cancelar</button>
+                        <button type="submit" class="btn btn-secondary">Crear Lista</button>
+                    </div>
+                </form>
+            </div>
+        </div>
+
+        <div id="toast" class="toast" role="status" aria-live="polite"></div>
+
+        <script src="https://www.youtube.com/iframe_api"></script>
+        <script type="module" src="/src/main.ts"></script>
+    </body>
+</html>
