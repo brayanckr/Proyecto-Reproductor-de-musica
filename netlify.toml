@@ -19,3 +19,11 @@
   for = "/assets/*"
   [headers.values]
     Cache-Control = "public, max-age=31536000, immutable"
+
+# YouTube embeds require a Referer and permission to autoplay inside the
+# cross-origin iframe; strict-origin-when-cross-origin leaks only the origin.
+[[headers]]
+  for = "/*"
+  [headers.values]
+    Referrer-Policy = "strict-origin-when-cross-origin"
+    Permissions-Policy = "autoplay=*"

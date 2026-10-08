@@ -691,6 +691,81 @@ body {
     gap: 0.6rem;
 }
 
+.modal__subtitle {
+    margin: -0.6rem 0 0.9rem;
+    color: var(--muted);
+    font-size: 0.85rem;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* ------------------- Playlist picker (add to list) ---------------------- */
+
+.playlist-picker {
+    display: grid;
+    gap: 0.4rem;
+    max-height: 280px;
+    overflow-y: auto;
+    margin-bottom: 0.9rem;
+}
+
+.playlist-picker__option {
+    display: flex;
+    align-items: center;
+    gap: 0.6rem;
+    padding: 0.6rem 0.75rem;
+    border: 1px solid var(--border);
+    border-radius: var(--radius-sm);
+    background: var(--surface-soft);
+    cursor: pointer;
+    transition: border-color 0.12s ease, background 0.12s ease;
+}
+
+.playlist-picker__option:hover {
+    background: var(--cyan-soft);
+}
+
+.playlist-picker__option.is-selected {
+    border-color: var(--cyan);
+    background: var(--cyan-soft);
+}
+
+.playlist-picker__option input {
+    flex: 0 0 auto;
+    accent-color: var(--cyan);
+}
+
+.playlist-picker__name {
+    flex: 1 1 auto;
+    min-width: 0;
+    color: var(--ink);
+    font-size: 0.9rem;
+    font-weight: 600;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.playlist-picker__count {
+    flex: 0 0 auto;
+    color: var(--muted);
+    font-size: 0.78rem;
+    font-variant-numeric: tabular-nums;
+}
+
+.playlist-picker__badge {
+    flex: 0 0 auto;
+    padding: 0.1rem 0.5rem;
+    border-radius: 999px;
+    background: var(--lime);
+    color: var(--ink);
+    font-size: 0.66rem;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.03em;
+}
+
 .panel {
     background: var(--surface);
     border: 1px solid var(--border);
@@ -1913,14 +1988,31 @@ body {
     border: 3px solid var(--ink);
 }
 
+/*
+ * Audio-only YouTube surface: the player must stay in the render tree so the
+ * IFrame API keeps playing, so it is moved off-screen and made fully
+ * transparent instead of using `display: none` (which pauses playback).
+ * `pointer-events: none` removes it from any hit-testing.
+ */
 .player-shell {
     position: fixed;
-    left: 0;
-    bottom: 0;
-    width: 1px;
-    height: 1px;
+    top: -10000px;
+    left: -10000px;
+    width: 200px;
+    height: 200px;
     overflow: hidden;
     opacity: 0;
+    pointer-events: none;
+    border: 0;
+    background: transparent;
+}
+
+.player-shell iframe,
+.player-shell #yt-player {
+    display: block;
+    width: 100%;
+    height: 100%;
+    border: 0;
     pointer-events: none;
 }
 

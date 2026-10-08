@@ -19,10 +19,19 @@ export interface AIRecommendation {
     reason: string;
 }
 
+/**
+ * Strict JSON object schema requested from Groq via `response_format:
+ * { type: 'json_object' }`. Wrapping the list in an object (instead of a bare
+ * array) is required by the JSON mode and keeps parsing deterministic.
+ */
+export interface AIRecommendationPayload {
+    songs: AIRecommendation[];
+}
+
 /** Optional configuration for the Groq (OpenAI-compatible) integration. */
 export interface MoodRecommendationConfig {
     /**
-     * Primary API key used by `fetchAIRecommendation` when none is passed per
+     * Primary API key used by `fetchAIRecommendations` when none is passed per
      * call. The web client injects `import.meta.env.VITE_GROQ_API_KEY` here at
      * construction time so the AI assistant works without manual input.
      */
@@ -31,6 +40,8 @@ export interface MoodRecommendationConfig {
     endpoint?: string;
     /** Model name sent to the endpoint. */
     model?: string;
+    /** Sampling temperature; higher values diversify the suggestions. */
+    temperature?: number;
 }
 
 /** Groq chat completions endpoint (OpenAI-compatible). */
@@ -38,30 +49,43 @@ const DEFAULT_AI_ENDPOINT = 'https://api.groq.com/openai/v1/chat/completions';
 
 /**
  * Active Groq model used by default. Overridable per instance through
- * `VITE_GROQ_MODEL`. Other currently supported Groq models include
- * `llama3-8b-8192` and `mixtral-8x7b-32768`.
+ * `VITE_GROQ_MODEL`. `llama-3.3-70b-versatile` is fast and supports JSON mode.
  */
 const DEFAULT_AI_MODEL = 'llama-3.3-70b-versatile';
+
+/**
+ * Default sampling temperature. Slightly above 0 keeps the curation lively
+ * while JSON mode guarantees a machine-parseable answer.
+ */
+const DEFAULT_AI_TEMPERATURE = 0.6;
+
+/** Hard cap on how many suggestions are accepted from a single response. */
+const MAX_SUGGESTIONS = 5;
+
+/** Object keys the model may use for the suggestions array. */
+const SUGGESTION_KEYS = ['songs', 'recommendations', 'results', 'tracks', 'items'] as const;
 
 /**
  * MoodRecommendationService
  * -------------------------
  * Thin client around the Groq chat completions API (OpenAI-compatible).
  *
- * It ONLY asks the LLM for a real, globally available YouTube Music track that
- * matches the user's mood or request, and returns the parsed JSON. There is no
- * local catalog, fallback array, or tag-matching logic: whenever Groq responds,
- * its suggestion is the one that is used.
+ * It interprets ANY music request (mood, genre/style/era, activity, artist or
+ * free description), asks the LLM for real YouTube Music tracks and returns the
+ * parsed JSON. There is no local catalog, fallback array, or tag-matching
+ * logic: whenever Groq responds, its suggestion is the one that is used.
  */
 export class MoodRecommendationService {
     private readonly apiKey?: string;
     private readonly endpoint: string;
     private readonly model: string;
+    private readonly temperature: number;
 
     constructor(config: MoodRecommendationConfig = {}) {
         this.apiKey = config.apiKey;
         this.endpoint = config.endpoint ?? DEFAULT_AI_ENDPOINT;
         this.model = config.model ?? DEFAULT_AI_MODEL;
+        this.temperature = config.temperature ?? DEFAULT_AI_TEMPERATURE;
     }
 
     /**
@@ -73,7 +97,7 @@ export class MoodRecommendationService {
      * empty array so the caller can surface a clear message instead of a static
      * list.
      *
-     * @param userMoodInput Mood or request text in Spanish or English.
+     * @param userMoodInput Mood, genre, era, activity, artist or description.
      * @param apiKey        Optional key overriding the constructor value.
      * @param exclude       Already shown suggestions; the prompt tells the model
      *                      not to recommend any of them again.
@@ -85,7 +109,8 @@ export class MoodRecommendationService {
         exclude: AIRecommendation[] = []
     ): Promise<AIRecommendation[]> {
         const effectiveKey = apiKey ?? this.apiKey;
-        if (!effectiveKey) {
+        const request = userMoodInput.trim();
+        if (!effectiveKey || !request) {
             return [];
         }
 
@@ -98,10 +123,12 @@ export class MoodRecommendationService {
                 },
                 body: JSON.stringify({
                     model: this.model,
-                    temperature: 0.4,
+                    temperature: this.temperature,
+                    // Guarantees the model emits a single parseable JSON object.
+                    response_format: { type: 'json_object' },
                     messages: [
                         { role: 'system', content: this.systemPrompt() },
-                        { role: 'user', content: this.buildUserPrompt(userMoodInput, exclude) }
+                        { role: 'user', content: this.buildUserPrompt(request, exclude) }
                     ]
                 })
             });
@@ -127,22 +154,28 @@ export class MoodRecommendationService {
     /**
      * System persona and strict output contract for the Groq model.
      *
-     * It pins the JSON array shape (up to five items), forces the `reason` to be
-     * written in Spanish, demands real existing songs and enforces genre/language
-     * fidelity, while forbidding any markdown wrapper.
+     * It classifies the request into mood, genre/style/era/activity or
+     * artist/description and always responds with a single JSON object holding
+     * up to five real songs, each with a Spanish `reason`. Mentioning "JSON" is
+     * mandatory for `response_format: json_object` to be accepted.
      */
     private systemPrompt(): string {
         return (
-            'You are an expert music curator API. You ONLY respond with raw valid JSON. ' +
-            'Suggest up to 5 REAL, existing songs (never invent titles or artists) that best ' +
-            'match the user request and are available on YouTube Music. Respond with ONLY a ' +
-            'JSON array (no markdown, no code fences, no extra text) where every element uses ' +
-            'exactly this shape: ' +
-            '{"title":"Exact Song Title","artist":"Exact Artist Name",' +
-            '"reason":"Explicación breve en español de por qué coincide exactamente con lo pedido."}. ' +
-            'Rules: if the user asks for a specific genre (for example "reggaeton"), every song ' +
-            'MUST belong to that genre; if the user asks for a specific language (for example ' +
-            '"español"), every song MUST be in that language. Return only the raw JSON array.'
+            'You are the music-intelligence engine of "UCCplay", an expert music curator. ' +
+            'Interpret ANY music request, not only moods. Classify the user intent and act: ' +
+            '(1) MOOD/EMOTION (e.g. "estoy triste", "feel energetic"): pick songs that match that emotional state. ' +
+            '(2) GENRE / STYLE / ERA / ACTIVITY (e.g. "rock de los 80", "hip hop argentino", ' +
+            '"música para programar", "workout music"): filter and suggest songs that strictly belong to ' +
+            'that genre/subgenre, decade, country or use case. ' +
+            '(3) ARTIST / FREE DESCRIPTION (e.g. "canciones de C.R.O", "temas parecidos a Coldplay"): ' +
+            'return the closest real tracks by that artist or matching that description. ' +
+            'Rules: suggest REAL, existing songs available on YouTube Music and never invent titles, ' +
+            'artists, albums or years; respect every explicit constraint (genre, language, decade, country, ' +
+            'activity) in each suggestion; keep each "reason" short and in SPANISH. ' +
+            `Return between 1 and ${MAX_SUGGESTIONS} songs (fewer is fine when unsure). ` +
+            'OUTPUT FORMAT (strict): respond with ONLY one valid JSON object, no markdown and no extra text, ' +
+            'using exactly this schema: ' +
+            '{"songs":[{"title":"Exact Song Title","artist":"Exact Artist Name","reason":"Motivo breve en español"}]}'
         );
     }
 
@@ -155,34 +188,23 @@ export class MoodRecommendationService {
                       .join(', ')}.`
                 : '';
 
-        return `User request: "${userMoodInput}".${exclusion}`;
+        return (
+            `Music request: "${userMoodInput}". Identify the intent ` +
+            `(mood, genre/style/era/activity, or artist/description) and return the JSON object ` +
+            `with the best matching real songs.${exclusion}`
+        );
     }
 
     /**
-     * Parses the JSON array returned by Groq. Tolerates stray markdown fences
-     * and discards malformed elements (missing title/artist).
+     * Parses the JSON returned by Groq. Tolerates stray markdown fences, a bare
+     * array (legacy) or the strict `{ "songs": [...] }` object, and discards
+     * malformed elements (missing title/artist).
      */
     private parseRecommendations(content: string): AIRecommendation[] {
-        // Remove markdown code fences if the model ignored the instruction.
-        const cleaned = content.replace(/```json/gi, '').replace(/```/g, '');
-        const arrayMatch = /\[[\s\S]*\]/.exec(cleaned);
-        if (!arrayMatch) {
-            return [];
-        }
-
-        let parsed: unknown;
-        try {
-            parsed = JSON.parse(arrayMatch[0]);
-        } catch {
-            return [];
-        }
-
-        if (!Array.isArray(parsed)) {
-            return [];
-        }
-
+        const rawEntries = this.extractEntries(content);
         const suggestions: AIRecommendation[] = [];
-        for (const entry of parsed) {
+
+        for (const entry of rawEntries) {
             if (typeof entry !== 'object' || entry === null) {
                 continue;
             }
@@ -199,14 +221,66 @@ export class MoodRecommendationService {
             suggestions.push({
                 title,
                 artist,
-                reason: reason || 'Sugerida por la IA según tu estado de ánimo.'
+                reason: reason || 'Sugerida por la IA según tu búsqueda.'
             });
 
-            if (suggestions.length >= 5) {
+            if (suggestions.length >= MAX_SUGGESTIONS) {
                 break;
             }
         }
 
         return suggestions;
+    }
+
+    /** Extracts the suggestions array from any tolerated response shape. */
+    private extractEntries(content: string): unknown[] {
+        const cleaned = content.replace(/```json/gi, '').replace(/```/g, '').trim();
+        if (!cleaned) {
+            return [];
+        }
+
+        const parsed =
+            this.tryParse(cleaned) ?? this.tryParse(this.extractJsonBlock(cleaned));
+
+        if (Array.isArray(parsed)) {
+            return parsed;
+        }
+
+        if (parsed !== null && typeof parsed === 'object') {
+            const record = parsed as Record<string, unknown>;
+            const key = SUGGESTION_KEYS.find((candidate) => Array.isArray(record[candidate]));
+            if (key) {
+                return record[key] as unknown[];
+            }
+        }
+
+        return [];
+    }
+
+    /** Parses JSON, returning null instead of throwing on malformed input. */
+    private tryParse(value: string | null): unknown {
+        if (!value) {
+            return null;
+        }
+
+        try {
+            return JSON.parse(value);
+        } catch {
+            return null;
+        }
+    }
+
+    /**
+     * Falls back to the outermost JSON object or array embedded in the text,
+     * used only when the raw content is not valid JSON on its own.
+     */
+    private extractJsonBlock(text: string): string | null {
+        const objectMatch = /\{[\s\S]*\}/.exec(text);
+        if (objectMatch) {
+            return objectMatch[0];
+        }
+
+        const arrayMatch = /\[[\s\S]*\]/.exec(text);
+        return arrayMatch ? arrayMatch[0] : null;
     }
 }

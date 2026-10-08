@@ -3,6 +3,9 @@
     <head>
         <meta charset="UTF-8" />
         <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <!-- YouTube embeds need a Referer: strict-origin-when-cross-origin sends
+             the site origin without leaking the full URL. -->
+        <meta name="referrer" content="strict-origin-when-cross-origin" />
         <meta name="description" content="UCCplay: reproductor de música institucional con lista doblemente enlazada." />
         <title>UCCplay — Reproductor de Música Institucional</title>
         <link rel="preconnect" href="https://fonts.googleapis.com" />
@@ -434,6 +437,24 @@
                         <button type="submit" class="btn btn-secondary">Crear Lista</button>
                     </div>
                 </form>
+            </div>
+        </div>
+
+        <!-- ============= Modal: elegir lista de destino al agregar ========== -->
+        <div class="modal-overlay" id="playlist-picker-modal" hidden>
+            <div class="modal" role="dialog" aria-modal="true" aria-labelledby="playlist-picker-title">
+                <h3 class="modal__title" id="playlist-picker-title">Agregar a una lista</h3>
+                <p id="playlist-picker-song" class="modal__subtitle"></p>
+
+                <div id="playlist-picker-list" class="playlist-picker"
+                    role="radiogroup" aria-label="Elige la lista de destino"></div>
+
+                <p id="playlist-picker-error" class="form-status is-error" role="alert"></p>
+
+                <div class="modal__actions">
+                    <button type="button" class="btn btn-ghost" id="btn-cancel-playlist-picker">Cancelar</button>
+                    <button type="button" class="btn btn-secondary" id="btn-confirm-playlist-picker">Agregar</button>
+                </div>
             </div>
         </div>
 

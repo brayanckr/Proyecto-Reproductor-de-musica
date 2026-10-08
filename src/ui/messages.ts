@@ -20,7 +20,20 @@ export const MESSAGES = {
         queuedNext: 'Canción programada para reproducirse a continuación.'
     },
     player: {
+        loading: 'Cargando la canción...',
         videoUnavailable: 'Este video no está disponible o no permite reproducción incrustada.',
+        videoRestricted: 'El propietario no permite reproducir este video fuera de YouTube.',
+        invalidVideoRequest: 'La solicitud del video no es válida.',
+        html5Error: 'El reproductor encontró un error interno de HTML5.',
+        configurationError:
+            'El reproductor no se pudo configurar (origen o referer). Revisa la configuración del sitio.',
+        playerUnavailable:
+            'No se pudo cargar el reproductor de YouTube. Revisa tu conexión o el bloqueador de anuncios e inténtalo de nuevo.',
+        readyTimeout:
+            'El reproductor de YouTube tardó demasiado en cargar. Revisa tu conexión e inténtalo de nuevo.',
+        playbackStalled:
+            'La reproducción no inició. El navegador puede estar bloqueando el audio: pulsa Reproducir otra vez.',
+        unknownError: (code: number) => `Error del reproductor de YouTube (código ${code}).`,
         previous: 'Anterior',
         play: 'Reproducir',
         pause: 'Pausa',
@@ -51,5 +64,15 @@ export const MESSAGES = {
         playNextTitle: (title: string) => `Reproducir ${title} a continuación`,
         addTitle: (title: string) => `Agregar ${title} a la lista`,
         regenerateTitle: 'Buscar otra recomendación para el mismo estado de ánimo'
+    },
+    playlistPicker: {
+        title: 'Agregar a una lista',
+        subtitle: (title: string, artist: string) => `${title} — ${artist}`,
+        activeBadge: 'Activa',
+        confirm: 'Agregar',
+        cancel: 'Cancelar',
+        empty: 'No hay listas disponibles.',
+        added: (name: string) => `Canción agregada a "${name}".`,
+        addFailed: 'No se pudo agregar la canción a la lista seleccionada.'
     }
 } as const;

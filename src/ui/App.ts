@@ -26,6 +26,9 @@ const ENV_PLACEHOLDER_PATTERN = /(tu_clave|your[_-]|changeme|_aqui|placeholder)/
 /** Seconds after which "Anterior" restarts the current track instead of going back. */
 const PREVIOUS_RESTART_THRESHOLD = 3;
 
+/** Milliseconds to wait for YouTube to report PLAYING before warning the user. */
+const PLAYBACK_WATCHDOG_TIMEOUT = 10000;
+
 /**
  * Reads an API key from `import.meta.env`, ignoring empty values and the
  * placeholders shipped in `.env.example`, so unconfigured keys fall back to
@@ -166,6 +169,16 @@ export class App {
     private isSeeking = false;
     private toastTimer: number | null = null;
 
+    /** Warns when a requested playback never reaches PLAYING. */
+    private playbackWatchdog: number | null = null;
+
+    /** Pending "add to playlist" request awaiting a destination selection. */
+    private pendingAdd: { song: Song; position: 'start' | 'end' | 'index'; index?: number } | null =
+        null;
+
+    /** Playlist chosen in the picker modal (radio selection). */
+    private selectedPlaylistId = '';
+
     /** Index of the table row currently being dragged (null when idle). */
     private draggedIndex: number | null = null;
 
@@ -275,6 +288,14 @@ export class App {
     private playlistModalError!: HTMLElement;
     private btnCancelPlaylist!: HTMLButtonElement;
 
+    /* Add-to-playlist picker modal */
+    private playlistPickerModal!: HTMLElement;
+    private playlistPickerList!: HTMLElement;
+    private playlistPickerSong!: HTMLElement;
+    private playlistPickerError!: HTMLElement;
+    private btnCancelPlaylistPicker!: HTMLButtonElement;
+    private btnConfirmPlaylistPicker!: HTMLButtonElement;
+
     /* Synchronized lyrics panel */
     private lyricsPanel!: HTMLElement;
     private lyricsContainer!: HTMLElement;
@@ -294,12 +315,17 @@ export class App {
     constructor() {
         this.player = new YouTubePlayer('yt-player', {
             onReady: () => {
-                this.player.setVolume(Number(this.inputVolume.value));
-                this.syncPlayerToCurrent(false);
+                // Reapply the real user volume/mute state, then only cue the
+                // current track when nothing was requested before ready.
+                this.applyVolumeState();
+                if (this.loadedVideoId === null) {
+                    this.syncPlayerToCurrent(false);
+                }
             },
             onStateChange: (state) => this.handlePlayerState(state),
             onError: (code) => this.handlePlayerError(code),
-            onProgress: (current, duration) => this.handleProgress(current, duration)
+            onProgress: (current, duration) => this.handleProgress(current, duration),
+            onUnavailable: (reason) => this.handlePlayerUnavailable(reason)
         });
     }
 
@@ -316,6 +342,12 @@ export class App {
         // The starter playlist is the initial playback source.
         this.playingController = this.manager.activeController;
         this.render();
+
+        // If the player was already ready before the catalog loaded, cue the
+        // first track now (onReady only fires once).
+        if (this.player.isReady() && this.loadedVideoId === null) {
+            this.syncPlayerToCurrent(false);
+        }
     }
 
     /* ------------------------------- Setup ---------------------------------- */
@@ -406,6 +438,17 @@ export class App {
         this.playlistModalError = requireElement('playlist-modal-error');
         this.btnCancelPlaylist = requireElement<HTMLButtonElement>('btn-cancel-playlist');
 
+        this.playlistPickerModal = requireElement('playlist-picker-modal');
+        this.playlistPickerList = requireElement('playlist-picker-list');
+        this.playlistPickerSong = requireElement('playlist-picker-song');
+        this.playlistPickerError = requireElement('playlist-picker-error');
+        this.btnCancelPlaylistPicker = requireElement<HTMLButtonElement>(
+            'btn-cancel-playlist-picker'
+        );
+        this.btnConfirmPlaylistPicker = requireElement<HTMLButtonElement>(
+            'btn-confirm-playlist-picker'
+        );
+
         this.lyricsPanel = requireElement('lyrics-panel');
         this.lyricsContainer = requireElement('lyrics-container');
         this.lyricsEmpty = requireElement('lyrics-empty');
@@ -470,6 +513,21 @@ export class App {
                 this.closePlaylistModal();
             }
         });
+
+        // Add-to-playlist picker modal.
+        this.btnCancelPlaylistPicker.addEventListener('click', () => this.closePlaylistPicker());
+        this.btnConfirmPlaylistPicker.addEventListener('click', () =>
+            this.confirmPlaylistPicker()
+        );
+        this.playlistPickerList.addEventListener('change', (event) =>
+            this.handlePlaylistPickerChange(event)
+        );
+        this.playlistPickerModal.addEventListener('click', (event) => {
+            if (event.target === this.playlistPickerModal) {
+                this.closePlaylistPicker();
+            }
+        });
+
         document.addEventListener('keydown', (event) => this.handleDocumentKeydown(event));
 
         // Synchronized lyrics panel.
@@ -667,6 +725,7 @@ export class App {
         if (controller !== null && controller === this.playingController) {
             this.playingController = null;
             this.isPlaying = false;
+            this.clearPlaybackWatchdog();
             this.player.pause();
             this.loadedVideoId = null;
         }
@@ -713,6 +772,8 @@ export class App {
                 this.closeShortcutsHelp();
             } else if (!this.playlistModal.hidden) {
                 this.closePlaylistModal();
+            } else if (!this.playlistPickerModal.hidden) {
+                this.closePlaylistPicker();
             } else if (this.isLyricsOpen) {
                 this.closeLyricsPanel();
             } else {
@@ -798,7 +859,7 @@ export class App {
     private handleAddSong(): void {
         this.openSearchDropdown();
         this.setSearchStatus(
-            'Elige dónde agregar: Al Inicio, Al Final o una Posición específica.',
+            'Busca una canción y, al agregarla, elige la lista de destino.',
             'info'
         );
         this.inputSearch.focus();
@@ -1010,8 +1071,10 @@ export class App {
 
         if (this.isPlaying) {
             this.player.pause();
+            this.clearPlaybackWatchdog();
         } else if (this.loadedVideoId === this.playback.currentSong.videoId) {
             this.player.play();
+            this.startPlaybackWatchdog();
         } else {
             this.syncPlayerToCurrent(true);
         }
@@ -1094,6 +1157,7 @@ export class App {
      */
     private stopPlayback(): void {
         this.isPlaying = false;
+        this.clearPlaybackWatchdog();
         this.player.pause();
         this.loadedVideoId = null;
         this.playerDuration = 0;
@@ -1151,11 +1215,12 @@ export class App {
     /** Loads the current node's video into the player. */
     private syncPlayerToCurrent(autoplay: boolean): void {
         const song = this.playback.currentSong;
-        if (!song || !this.player.isReady()) {
-            // On ready the player invokes this again with the latest current node.
+        if (!song) {
             return;
         }
 
+        // Before the player is ready the request is queued by YouTubePlayer
+        // and flushed on `onReady`, instead of being silently dropped.
         this.player.load(song.videoId, autoplay);
         this.loadedVideoId = song.videoId;
         this.playerDuration = song.duration > 0 ? song.duration : this.playerDuration;
@@ -1165,22 +1230,37 @@ export class App {
 
         if (autoplay) {
             this.player.play();
+            this.startPlaybackWatchdog();
         }
+
+        this.renderControls();
+        this.renderEqualizer();
+        this.renderRowPlayingState();
     }
 
     private handlePlayerState(state: number): void {
         if (state === YouTubePlayerState.PLAYING) {
+            // Only now is the UI allowed to claim playback (no optimistic flag).
             this.isPlaying = true;
+            this.clearPlaybackWatchdog();
+            // Reapply the real user volume/mute state: YouTube may start muted.
+            this.applyVolumeState();
+            this.logPlayerDiagnostics();
             this.setStatus('Reproduciendo');
         } else if (state === YouTubePlayerState.PAUSED) {
             this.isPlaying = false;
+            this.clearPlaybackWatchdog();
             this.setStatus('En pausa');
         } else if (state === YouTubePlayerState.CUED) {
             this.isPlaying = false;
             this.setStatus('Listo para reproducir');
+        } else if (state === YouTubePlayerState.BUFFERING) {
+            // Keep waiting; the watchdog is not cleared until PLAYING.
+            this.setStatus(MESSAGES.player.loading);
         } else if (state === YouTubePlayerState.ENDED) {
             // Automatic advance: honors track/playlist repeat via next({ auto: true }).
             this.isPlaying = false;
+            this.clearPlaybackWatchdog();
             if (this.playback.next({ auto: true })) {
                 this.render();
                 this.syncPlayerToCurrent(true);
@@ -1194,6 +1274,56 @@ export class App {
         this.renderRowPlayingState();
     }
 
+    /**
+     * Reapplies the volume slider value and the mute state to the player.
+     * Called on `onReady` and whenever playback starts, so a muted autoplay
+     * start is corrected and the real user preference always wins.
+     */
+    private applyVolumeState(): void {
+        const volume = Number(this.inputVolume.value);
+        this.player.setVolume(volume);
+
+        if (this.isMuted || volume === 0) {
+            this.player.mute();
+        } else {
+            this.player.unMute();
+        }
+
+        this.renderVolume();
+    }
+
+    /** Logs the live player volume/mute state to help diagnose silent playback. */
+    private logPlayerDiagnostics(): void {
+        console.warn('[UCCplay] player diagnostics:', {
+            ready: this.player.isReady(),
+            volume: this.player.getVolume(),
+            muted: this.player.isMuted(),
+            videoId: this.loadedVideoId
+        });
+    }
+
+    /** Starts the "no arrancó" watchdog for a requested playback. */
+    private startPlaybackWatchdog(): void {
+        this.clearPlaybackWatchdog();
+        this.playbackWatchdog = window.setTimeout(() => {
+            this.playbackWatchdog = null;
+            if (this.isPlaying) {
+                return;
+            }
+
+            console.warn('[UCCplay] playback did not reach PLAYING before the watchdog expired.');
+            this.setStatus(MESSAGES.player.playbackStalled);
+            this.showToast(MESSAGES.player.playbackStalled);
+        }, PLAYBACK_WATCHDOG_TIMEOUT);
+    }
+
+    private clearPlaybackWatchdog(): void {
+        if (this.playbackWatchdog !== null) {
+            window.clearTimeout(this.playbackWatchdog);
+            this.playbackWatchdog = null;
+        }
+    }
+
     /** Toggles the animated equalizer on the active row without a full re-render. */
     private renderRowPlayingState(): void {
         const activeRow = this.playlistBody.querySelector<HTMLElement>('tr.is-active');
@@ -1203,21 +1333,28 @@ export class App {
     }
 
     /**
-     * Handles IFrame player errors (codes 2, 5, 100, 101, 150): shows a Spanish
-     * message and, when a next track exists, skips to it after 2 seconds.
+     * Handles IFrame player errors (codes 2, 5, 100, 101, 150, 153): shows a
+     * Spanish message and, for videos that cannot be embedded, skips to the
+     * next track after 2 seconds. Any other code is logged.
      */
     private handlePlayerError(code: number): void {
-        const blockedCodes = [2, 5, 100, 101, 150];
-        if (!blockedCodes.includes(code)) {
-            return;
-        }
-
+        this.clearPlaybackWatchdog();
         this.isPlaying = false;
-        this.setStatus(MESSAGES.player.videoUnavailable);
-        this.showToast(MESSAGES.player.videoUnavailable);
+
+        const message = this.describePlayerError(code);
+        console.warn(`[UCCplay] YouTube player error ${code}: ${message}`);
+        this.setStatus(message);
+        this.showToast(message);
+
+        this.renderControls();
+        this.renderEqualizer();
         this.renderRowPlayingState();
 
-        if (this.playback.hasNext) {
+        // Skipping only helps for videos that cannot be played: an invalid
+        // request, an HTML5 failure or an embed restriction. Configuration
+        // errors (153) would fail again on the next track.
+        const skippable = [2, 5, 100, 101, 150];
+        if (skippable.includes(code) && this.playback.hasNext) {
             window.setTimeout(() => {
                 if (this.playback.next({ auto: true })) {
                     this.render();
@@ -1225,6 +1362,43 @@ export class App {
                 }
             }, 2000);
         }
+    }
+
+    /** Maps a YouTube IFrame error code to a Spanish message. */
+    private describePlayerError(code: number): string {
+        switch (code) {
+            case 2:
+                return MESSAGES.player.invalidVideoRequest;
+            case 5:
+                return MESSAGES.player.html5Error;
+            case 100:
+                return MESSAGES.player.videoUnavailable;
+            case 101:
+            case 150:
+                return MESSAGES.player.videoRestricted;
+            case 153:
+                return MESSAGES.player.configurationError;
+            default:
+                return MESSAGES.player.unknownError(code);
+        }
+    }
+
+    /** Reports a player that never became ready (blocked script or timeout). */
+    private handlePlayerUnavailable(reason: string): void {
+        this.clearPlaybackWatchdog();
+        this.isPlaying = false;
+
+        const message =
+            reason === 'ready-timeout'
+                ? MESSAGES.player.readyTimeout
+                : MESSAGES.player.playerUnavailable;
+        console.warn(`[UCCplay] YouTube player unavailable (${reason}).`);
+        this.setStatus(message);
+        this.showToast(message);
+
+        this.renderControls();
+        this.renderEqualizer();
+        this.renderRowPlayingState();
     }
 
     private handleProgress(currentTime: number, duration: number): void {
@@ -1434,27 +1608,16 @@ export class App {
         let insertIndex: number | undefined;
         if (position === 'index') {
             const raw = Math.trunc(Number(indexInput?.value));
-            const maxPosition = this.active.length + 1;
-            if (!Number.isInteger(raw) || raw < 1 || raw > maxPosition) {
-                this.setSearchStatus(
-                    `Posición inválida. Usa un número entre 1 y ${maxPosition}.`,
-                    'error'
-                );
+            if (!Number.isInteger(raw) || raw < 1) {
+                this.setSearchStatus('Escribe una posición válida (1 o más).', 'error');
                 indexInput?.focus();
                 return;
             }
             insertIndex = raw - 1;
         }
 
-        if (!this.active.addTrack(uniqueSong, position, insertIndex)) {
-            this.setSearchStatus('No se pudo agregar la canción a la lista.', 'error');
-            return;
-        }
-
-        // Register the song in the mood catalog so it can be recommended later.
-        this.catalog.push(uniqueSong);
-        this.showToast('¡Canción agregada a la lista!');
-        this.render();
+        // Let the user choose the destination playlist before inserting.
+        this.requestAddToPlaylist(uniqueSong, position, insertIndex);
     }
 
     /** Queues a track right after the current one, without starting playback. */
@@ -1463,6 +1626,156 @@ export class App {
         this.catalog.push(song);
         this.render();
         this.showToast(`A continuación: ${song.title}`);
+    }
+
+    /* --------------------- Add-to-playlist picker --------------------------- */
+
+    /**
+     * Entry point for every "add to list" action. When more than one playlist
+     * exists it opens a selector so the user picks the destination; with a
+     * single playlist (or none besides the default) it adds the track directly.
+     */
+    private requestAddToPlaylist(
+        song: Song,
+        position: 'start' | 'end' | 'index',
+        index?: number
+    ): void {
+        const playlists = this.manager.getPlaylists();
+
+        if (playlists.length <= 1) {
+            const only = playlists[0];
+            if (!only || !this.addSongToPlaylist({ song, position, index }, only.id)) {
+                this.showToast(MESSAGES.playlistPicker.addFailed);
+            }
+            return;
+        }
+
+        this.pendingAdd = { song, position, index };
+        this.selectedPlaylistId = this.manager.activeId || playlists[0].id;
+        this.renderPlaylistPicker();
+        this.playlistPickerModal.hidden = false;
+        this.btnConfirmPlaylistPicker.focus();
+    }
+
+    /** Renders the destination options as a radio list with counts and badge. */
+    private renderPlaylistPicker(): void {
+        const song = this.pendingAdd?.song;
+        this.playlistPickerSong.textContent = song
+            ? MESSAGES.playlistPicker.subtitle(song.title, song.artist)
+            : '';
+
+        this.playlistPickerList.innerHTML = this.manager
+            .getPlaylists()
+            .map((playlist) => {
+                const selected = playlist.id === this.selectedPlaylistId;
+                const activeBadge =
+                    playlist.id === this.manager.activeId
+                        ? `<span class="playlist-picker__badge">${MESSAGES.playlistPicker.activeBadge}</span>`
+                        : '';
+
+                return `
+                    <label class="playlist-picker__option${selected ? ' is-selected' : ''}">
+                        <input type="radio" name="playlist-picker"
+                            value="${escapeHtml(playlist.id)}" ${selected ? 'checked' : ''} />
+                        <span class="playlist-picker__name">${escapeHtml(playlist.name)}</span>
+                        <span class="playlist-picker__count">${playlist.length}</span>
+                        ${activeBadge}
+                    </label>`;
+            })
+            .join('');
+
+        this.playlistPickerError.textContent = '';
+    }
+
+    /** Tracks the radio selection so Confirm knows the target playlist. */
+    private handlePlaylistPickerChange(event: Event): void {
+        const target = event.target as HTMLInputElement | null;
+        if (!target || target.name !== 'playlist-picker') {
+            return;
+        }
+
+        this.selectedPlaylistId = target.value;
+        this.playlistPickerList
+            .querySelectorAll<HTMLElement>('.playlist-picker__option')
+            .forEach((option) => option.classList.toggle('is-selected', option.contains(target)));
+    }
+
+    /** Commits the pending add into the selected playlist. */
+    private confirmPlaylistPicker(): void {
+        const request = this.pendingAdd;
+        const targetId = this.selectedPlaylistId;
+
+        if (!request || !targetId) {
+            this.closePlaylistPicker();
+            return;
+        }
+
+        if (!this.addSongToPlaylist(request, targetId)) {
+            this.playlistPickerError.textContent = MESSAGES.playlistPicker.addFailed;
+            return;
+        }
+
+        this.closePlaylistPicker();
+    }
+
+    /**
+     * Inserts the track into the target playlist (append by default), records
+     * it in the mood catalog and refreshes the affected views. Dispatches a
+     * `uccplay:playlist-updated` event so other parts of the UI can react.
+     *
+     * @returns true when the track was added.
+     */
+    private addSongToPlaylist(
+        request: { song: Song; position: 'start' | 'end' | 'index'; index?: number },
+        playlistId: string
+    ): boolean {
+        const controller = this.manager.getController(playlistId);
+        if (!controller) {
+            return false;
+        }
+
+        let added = controller.addTrack(request.song, request.position, request.index);
+
+        // An out-of-range specific position falls back to the end of the list,
+        // so the track is never silently dropped.
+        if (!added && request.position === 'index') {
+            added = controller.addTrack(request.song, 'end');
+        }
+
+        if (!added) {
+            return false;
+        }
+
+        // Register the song so the mood recommender can surface it later.
+        this.catalog.push(request.song);
+
+        const name = this.manager.getPlaylists().find((playlist) => playlist.id === playlistId)?.name ?? '';
+
+        // Only the active table needs a full re-render; the sidebar always
+        // refreshes so counts stay in sync across every playlist.
+        if (playlistId === this.manager.activeId) {
+            this.renderPlaylist();
+        }
+        this.renderPlaylistTree();
+
+        this.notifyPlaylistUpdated(playlistId, request.song);
+        this.showToast(MESSAGES.playlistPicker.added(name));
+        return true;
+    }
+
+    /** Broadcasts a state-change event after a playlist mutation. */
+    private notifyPlaylistUpdated(playlistId: string, song: Song): void {
+        window.dispatchEvent(
+            new CustomEvent('uccplay:playlist-updated', {
+                detail: { playlistId, song }
+            })
+        );
+    }
+
+    private closePlaylistPicker(): void {
+        this.playlistPickerModal.hidden = true;
+        this.pendingAdd = null;
+        this.playlistPickerError.textContent = '';
     }
 
     /**
@@ -1483,7 +1796,9 @@ export class App {
         this.catalog.push(song);
 
         this.render();
-        this.isPlaying = true;
+        // Do NOT claim playback here: the row only lights up once YouTube
+        // reports PLAYING (handlePlayerState).
+        this.setStatus(MESSAGES.player.loading);
         this.syncPlayerToCurrent(true);
         this.closeSearchDropdown();
         this.scrollPlaybackIntoView();
@@ -1703,16 +2018,9 @@ export class App {
 
         if (button.dataset.action === 'add') {
             const uniqueSong: Song = { ...song, id: this.uniqueId(song.id) };
-            if (!this.active.addTrack(uniqueSong, 'end')) {
-                this.setMoodStatus(MESSAGES.mood.addFailed, 'error');
-                return;
-            }
-
-            // Register the song in the mood catalog so it can be recommended later.
-            this.catalog.push(uniqueSong);
-            this.render();
-            this.showToast(MESSAGES.preview.addedToast);
-            this.setMoodStatus(MESSAGES.mood.added, 'success');
+            // Let the user choose the destination playlist (or add directly
+            // when there is only one).
+            this.requestAddToPlaylist(uniqueSong, 'end');
         }
     }
 
@@ -1824,8 +2132,8 @@ export class App {
             this.playingController = this.active;
             if (this.playback.playTrackAt(index)) {
                 this.render();
+                this.setStatus(MESSAGES.player.loading);
                 this.syncPlayerToCurrent(true);
-                this.isPlaying = true;
             }
         } else if (action === 'play-next') {
             const index = Number(button.dataset.index);
